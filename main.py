@@ -5,11 +5,14 @@ import matplotlib.pyplot as plt
 '''
 Name: Spencer
 Date: 12/8/25
-About: colour threshold an image and create bounding box for the object. This can be used in order to 
-
-
+About: colour threshold an image and create bounding box for the object. This can be used in order to do something 
 
 '''
+
+#Look to automating the file input
+
+
+
 
 
 def colourThreshold (imgpath):
