@@ -11,7 +11,7 @@ This can be used in order to do something useful
 '''
 
 #Look to automating the file input
-##
+
 
 def colourThreshold (imgpath):
 
