@@ -1,7 +1,7 @@
 '''
 Name: Spencer
 Date: 12/8/25
-Last Modified: 1/8/26
+Last Modified: 1/12/26
 About: colour threshold an image and create bounding box for the object. 
 This can be used in order to do something useful 
 
@@ -9,6 +9,7 @@ This can be used in order to do something useful
 
 import cv2
 import numpy as np
+import json
 import os
 import platform #check the os of the user
 import matplotlib.pyplot as plt
@@ -20,6 +21,26 @@ from PIL import Image
 #to convert nrrd -> png
 import SimpleITK as itk
 from PIL.ImageColor import colormap
+
+
+'''
+Creating a file to store the each patient file 
+@param jsonPath (str): path for the json file, should save local 
+
+'''
+def processedFile (jsonPath):
+    patientFile = "processed.json"
+
+    # load once
+    if os.path.exists(jsonPath):
+        with open(jsonPath, "r") as f:
+            #reuturn file
+            return json.load(f)
+    #if no file
+    return {}
+
+
+
 
 '''
 Convert the DCM image file into a PNG (Lossless Compression)
@@ -55,6 +76,10 @@ def convType (file):
 Convert Nrrd file into PNG, this takes both the segmentation mask and the medical image (CT) and converts it into a PNG 
 @param medImg (str): nrrd file path of the medical image 
 @param segImg (str): nrrd file paht of the segmentaion mask 
+
+i think it may need a third param : patient ID -- for folder creation
+@param patientID (str): should be the file path for the patienID folder
+
 '''
 
 def convType2 (medImg, segImg):
@@ -67,41 +92,66 @@ def convType2 (medImg, segImg):
     medImageArray = itk.GetArrayFromImage(medImage)
     segImageArray = itk.GetArrayFromImage(segImage)
 
-    #line up the slice with the seg
-    slice =  medImageArray.shape[0] // 2 #set arb middle slice
+    #line up the slice with the seg (temporary select one slice)
+    sliceLayer =  medImageArray.shape[0] // 2 #set arb middle slice
 
     #this can be looped for all slices
+    #for sliceLayer in range (medImageArray.shape[0]):
 
     #line up slices (@ selected slice)
-    imgSlice = medImageArray [slice]
-    segSlice = segImageArray [slice]
+    imgSlice = medImageArray [sliceLayer]
+    segSlice = segImageArray [sliceLayer]
 
-    '''
-    #slice normalization .. idk
-    imgSliceNormd = cv2.normalize(imgSlice, None, 0, 255, cv2.NORM_MINMAX)
-    imgSliceNormd = imgSlice.astype(np.uint8)
-    '''
     #manually normalize CT image slice
     imgSliceNormd = np.clip(imgSlice, -1000, 3000)
 
     #add 1000 to the HU to get rid of the negative pixels, *255 scales to 8-bit img
     imgSliceNormd = ((imgSliceNormd + 1000)/ 4000 * 255).astype(np.uint8)
 
-    #overlay the mask @ slice.. binary mask
-    overlayMask = (segSlice == 1)
-
     #convert the ct to BGR
     colourCT = cv2.cvtColor(imgSliceNormd, cv2.COLOR_GRAY2BGR)
 
-    #put the mask on
-    colourCT [overlayMask] = [0,255,0]
+    #get the amount of labels from the seg masks @ slice.. i guess this works
+    numLabels = np.unique(segSlice)
 
-    #save the file
-    cv2.imwrite("seg+CT.png", colourCT)
+    for label in numLabels:
+
+        #for each label tag.. overlay the mask @ slice, treated as the tag, so implant = 1 and bone seg = 2 (hopefully)
+        if label == 1:
+
+            #put the mask on (BGR colouring)
+            colourCT [segSlice == label] = [0,255,0] #green
 
 
+        #this is for the bone seg if correct
+        elif label == 2:
+
+            #put the mask on (BGR colouring)
+            colourCT [segSlice == label] = [0,150,255] #orange
+
+    #convert to img
+    colourCT = Image.fromarray(colourCT)
 
 
+    #save images within a new folder
+    outputFolder = os.path.join((os.path.dirname(medImg)), "output")
+    #handles if the folder already exists
+    os.makedirs(outputFolder, exist_ok = True)
+
+    #file name saved as a png for now
+    fileName = "SegCT" + str(sliceLayer) + ".png"
+    savePath = os.path.join(outputFolder, fileName)
+
+    #savee
+    colourCT.save(savePath)
+
+
+    #call boudning box function (maybe)..
+    colourThreshold(savePath, str(sliceLayer))
+
+
+    #return the path of the image so it can be used by colourThreshold
+    return savePath
 
 
 
@@ -134,30 +184,82 @@ Run through each image in folder to get the path
 '''
 def runImages (folderPath):
 
+    #accessing json file for name storage and folder path
+    patientFilePath = "processed.json"
+    processed = processedFile(patientFilePath)
+
+
     #for files in the path
-    #dirRoot: current directory path
-    #dirNames: subdirectories within path
-    #dirFiles: non-directory files within path
+    #dirRoot: current directory path (folder)
+    #dirNames: subdirectories within path (other folders in folder)
+    #dirFiles: non-directory files within path (files in folder)
     for dirRoot, dirNames, dirFiles in os.walk(folderPath):
+
+        #name of the last folder it was in (ie.. Patient001)
+        patientID = os.path.basename(os.path.dirname(dirRoot))
+
+        # check to see if case is in the file directory and processed
+        if patientID in processed and processed[patientID].get("processed"):
+            print(f"Skipping {patientID} (.. Already processed)")
+            continue
+
+        #set up the seg and image path
+        imagePath = " "
+        segPath = " "
+
+
         for file in dirFiles:
-            #make it so that it only takes the specific file type (.dcm)
+            #make it so that it only takes the specific file type (.nrrd) *changed to nrrd
             if file.endswith(".dcm"):
+                #this is the complete file path
                 completePath = os.path.join(dirRoot, file)
-                #print(completePath)
+                completePath = fr'{completePath}'
+                print(completePath)
 
-            #need to convert dcm -> png (lossless)
-                convType(completePath)
+                #look for segmentation file and image file
+                if "seg" in file.lower():
+                    segPath = completePath
 
-            #call colourThreshold
+                else:
+                    imagePath = completePath
+
+
+        #if folder contains both the seg path and the image path
+        if segPath and imagePath:
+            print(f"Prcessing {patientID}")
+
+                  
+        #need to convert nnrd -> png (lossless) * think about maybe using tiff?
+
+            #call colour threshold to threshold the images while calling convtype2 to convert the nrrd files into something useful
+            convType2(imagePath, segPath) #third param for convtype2
+
+            #tag for the json file
+            processed [patientID] = {
+                "Image Path" : imagePath,
+                "Seg Path" : segPath,
+                "Processed" : True
+            }
+
+            #tag it int the json file
+            with open(patientFilePath, "w") as f:
+                json.dump(processed, f)
+
+        else:
+            print(f"error with something in {patientID}")
+
 
 
 
 ''' 
 Run through each image and create the threshold masks
 @param imgpath (str): image path 
+@param sliceLayer (str): Slice number the file saving 
+(this could be nice)
+@param outputFolderPath (str): path of the output folder 
 
 '''
-def colourThreshold (imgpath):
+def colourThreshold (imgpath, sliceLayer):
 
     image = cv2.imread(imgpath)
 
@@ -170,7 +272,7 @@ def colourThreshold (imgpath):
 
     #creating the mask through HSV bounding via upper and lower bound
     mask = cv2.inRange(hsv, lowerBound, upperBound)
-    cv2.imwrite('mask.png', mask)
+    #cv2.imwrite('mask.png', mask)
 
 
     #creating the bounding box
@@ -184,7 +286,24 @@ def colourThreshold (imgpath):
         x, y, w, h = cv2.boundingRect(object)
         cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-    cv2.imwrite("contoured.png", image)
+    #cv2.imwrite("contoured.png", image)
+
+
+    #save images within a new folder (boundedOutput) folder
+    outputFolder = os.path.join((os.path.dirname(imgpath)), "boundedOutput")
+    #handles if the folder already exists
+    os.makedirs(outputFolder, exist_ok = True)
+
+    #saving the images with PIL
+    image = Image.fromarray(image)
+
+    #save path into the new folder
+    fileName = "BoundedSegCT" + sliceLayer + ".png"
+    savePath = os.path.join(outputFolder, fileName)
+
+    #savee
+    image.save(savePath)
+
 
 #Testing
 #colourThreshold("JRC.png")
